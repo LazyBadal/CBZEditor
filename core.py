@@ -54,10 +54,7 @@ def extract_numbers(folder_name):
 
 # ---------- CALIBRE DB (CORRECT MATCHING) ----------
 
-def get_metadata_from_db(db_path, title):
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    cur = conn.cursor()
-
+def get_metadata_from_db(cur, title):
     print("DB search (title):", title)
 
     cur.execute("""
@@ -70,7 +67,6 @@ def get_metadata_from_db(db_path, title):
     print("DB result:", book)
 
     if not book:
-        conn.close()
         return None
 
     book_id = book[0]
@@ -100,14 +96,11 @@ def get_metadata_from_db(db_path, title):
     row = cur.fetchone()
     series = row[0] if row else ""
 
-    conn.close()
-
     return {
         "author": author,
         "tags": tags,
         "series": series
     }
-
 
 
 def debug_db(db_path):
@@ -129,6 +122,12 @@ def process_folder(folder, db_path, default_series, default_author, default_tags
         raise Exception("Invalid folder")
 
     use_db = bool(db_path and os.path.isfile(db_path))
+
+    if use_db:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        cur = conn.cursor()
+    else:
+        cur = None
 
     if use_db:
         debug_db(db_path)
@@ -162,7 +161,7 @@ def process_folder(folder, db_path, default_series, default_author, default_tags
             print("Series detected:", series_name)
             print("Number:", number)
 
-            meta = get_metadata_from_db(db_path, title)
+            meta = get_metadata_from_db(cur, title)
         else:
             meta = None
 
@@ -180,4 +179,7 @@ def process_folder(folder, db_path, default_series, default_author, default_tags
         print(f"[{number}] {title}")
         processed += 1
 
+    if use_db:
+        conn.close()
+            
     return processed
