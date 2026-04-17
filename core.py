@@ -3,6 +3,7 @@ import zipfile
 import tempfile
 import shutil
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ---------- XML ----------
 def create_xml(series, number, title, author, tags, summary, number_float=None):
@@ -103,34 +104,48 @@ def get_metadata_from_db(cur, title):
     }
 
 
-def debug_db(db_path):
-    import sqlite3
-
-    conn = sqlite3.connect(db_path)
-    cur = conn.cursor()
-
-    print("\n--- BOOK COUNT ---")
-    cur.execute("SELECT COUNT(*) FROM books")
-    print(cur.fetchone())
-
-    conn.close()
-
 
 # ---------- MAIN ----------
+
+def process_single_file(full_path, db_path, default_series, default_author, default_tags, summary, use_db):
+    filename = os.path.basename(full_path)
+    title = os.path.splitext(filename)[0]
+
+    parent = os.path.basename(os.path.dirname(full_path))
+    number, number_float = extract_numbers(parent)
+
+    if number is None:
+        return f"Skipping: {full_path}"
+
+    # DB per thread (safe)
+    if use_db:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        cur = conn.cursor()
+        meta = get_metadata_from_db(cur, title)
+        conn.close()
+    else:
+        meta = None
+
+    if meta:
+        author = meta["author"] or default_author
+        tags = meta["tags"] or default_tags
+        series = meta["series"] or default_series
+    else:
+        author = default_author
+        tags = default_tags
+        series = default_series
+
+    process_cbz(full_path, series, number, title, author, tags, summary, number_float)
+
+    return f"[{number}] {title}"
+
+
 def process_folder(folder, db_path, default_series, default_author, default_tags, summary):
     if not os.path.isdir(folder):
         raise Exception("Invalid folder")
 
     use_db = bool(db_path and os.path.isfile(db_path))
 
-    if use_db:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        cur = conn.cursor()
-    else:
-        cur = None
-
-    if use_db:
-        debug_db(db_path)
 
     cbz_files = []
 
@@ -143,43 +158,28 @@ def process_folder(folder, db_path, default_series, default_author, default_tags
 
     processed = 0
 
-    for full_path in cbz_files:
-        filename = os.path.basename(full_path)
-        title = os.path.splitext(filename)[0]
+    max_workers = 2  # your choice (safe default)
 
-        parent = os.path.basename(os.path.dirname(full_path))
-        number, number_float = extract_numbers(parent)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(
+                process_single_file,
+                full_path,
+                db_path,
+                default_series,
+                default_author,
+                default_tags,
+                summary,
+                use_db
+            )
+            for full_path in cbz_files
+        ]
 
-        if number is None:
-            print(f"Skipping: {full_path}")
-            continue
+        for future in as_completed(futures):
+            result = future.result()
+            print(result)
 
-        # ---------- DB OR MANUAL ----------
-        if use_db:
-            series_name = os.path.basename(os.path.dirname(os.path.dirname(full_path)))
-
-            print("Series detected:", series_name)
-            print("Number:", number)
-
-            meta = get_metadata_from_db(cur, title)
-        else:
-            meta = None
-
-        if meta:
-            author = meta["author"] or default_author
-            tags = meta["tags"] or default_tags
-            series = meta["series"] or default_series
-        else:
-            author = default_author
-            tags = default_tags
-            series = default_series
-
-        process_cbz(full_path, series, number, title, author, tags, summary, number_float)
-
-        print(f"[{number}] {title}")
-        processed += 1
-
-    if use_db:
-        conn.close()
+            if result and result.startswith("["):
+                processed += 1
             
     return processed
